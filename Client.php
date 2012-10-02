@@ -158,6 +158,11 @@ class Credis_Client {
      * @var bool
      */
     protected $standalone;
+    
+    /**
+     * @var bool
+     */
+    protected $recoverFromErrors = FALSE;
 
     /**
      * @var int
@@ -241,6 +246,15 @@ class Credis_Client {
             throw new CredisException('Cannot force Credis_Client to use standalone PHP driver after a connection has already been established.');
         }
         $this->standalone = TRUE;
+        return $this;
+    }
+
+    /**
+     * @return Credis_Client
+     */
+    public function recoverFromErrors()
+    {
+        $this->recoverFromErrors = TRUE;
         return $this;
     }
 
@@ -356,9 +370,17 @@ class Credis_Client {
     public function __call($name, $args)
     {
         // Lazy connection
-        $this->connect();
+        try { 
+          $this->connect();
+        } 
+        catch (Exception $e){
+          // Todo: Give something in return. This depends on the call.
+          if (!$this->recoverFromErrors) {
+            throw $e;
+          }
+        }
 
-        $name = strtolower($name);
+        $name = strtolower($name);                              
 
         // Send request via native PHP
         if($this->standalone)
@@ -401,15 +423,42 @@ class Credis_Client {
 
                     // Write request
                     if($this->commands) {
-                        $this->write_command($this->commands);
+                        try {
+                          $this->write_command($this->commands);
+                        } catch (exception $e) { 
+                          // If option is set, handle Redis failure gracefully
+                          if ($this->recoverFromErrors) {
+                          // Command failed. Return empty response, so Magento can handle it.
+                          $this->usePipeline = $this->isMulti = FALSE;
+                          return array();
+                          }
+                          else {
+                          // Do not handle the exception
+                          throw $e;
+                          }              
+                        }  
                     }
                     $this->commands = NULL;
-
+                    
                     // Read response
                     $response = array();
                     foreach($this->commandNames as $command) {
-                        $response[] = $this->read_reply($command);
+                        try {
+                          $response[] = $this->read_reply($command);
+                        } catch (exception $e) { 
+                          // If option is set, handle Redis failure gracefully
+                          if ($this->recoverFromErrors) {
+                          // Command failed. Return empty response, so Magento can handle it.
+                            $this->usePipeline = $this->isMulti = FALSE;
+                            return array();
+                          }
+                          else {
+                          // Do not handle the exception
+                          throw $e;
+                          }              
+                        }  
                     }
+            
                     $this->commandNames = NULL;
 
                     if($this->isMulti) {
@@ -446,9 +495,36 @@ class Credis_Client {
             // Non-pipeline mode
             array_unshift($args, $name);
             $command = self::_prepare_command($args);
-            $this->write_command($command);
-            $response = $this->read_reply($name);
-
+            
+            try {
+              $this->write_command($command);
+            } 
+            catch (exception $e) {
+              // If option is set, handle Redis failure gracefully
+              if ($this->recoverFromErrors) {
+                // Command failed. Return empty response, so Magento can handle it.
+                return array();
+              }
+              else {
+                  // Do not handle the exception
+                  throw $e;
+              }              
+            }
+            
+            try {
+              $response = $this->read_reply($name);
+            } catch (exception $e) { 
+            // If option is set, handle Redis failure gracefully
+              if ($this->recoverFromErrors) {
+                // Command failed. Return empty response, so Magento can handle it.
+                return array();
+              }
+              else {
+                  // Do not handle the exception
+                  throw $e;
+              }              
+            }    
+            
             // Watch mode disables reconnect so error is thrown
             if($name == 'watch') {
                 $this->isWatching = TRUE;
